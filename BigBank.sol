@@ -57,7 +57,9 @@ contract Bank {
     function getTop3() public view returns (address[3] memory) {
         return Top3Address;
     }
-    receive() external payable { }
+    receive() external payable { 
+        deposit();
+    }
     
 }
 
@@ -117,6 +119,7 @@ contract BigBank is Bank, Ownable {
         public
         onlyOwner
     {
+        
         //require(msg.sender==owner,"only owner can withdraw eth");
         //payable(msg.sender).transfer(TotalBalances);
         if (recipient == address(0)) revert invalidAddress(address(0));

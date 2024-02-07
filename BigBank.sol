@@ -2,131 +2,200 @@
 pragma solidity ^0.8.20;
 
 contract Bank {
-    //balances User address => amount
-    mapping(address => uint256) public UserBalances;
+    // Mapping to store the balance of each address
+    mapping(address => uint256) private balances;
+    // Store whether a user is registered
+    mapping(address => bool) private registeredUsers;
+    // Mapping to store the loan balance of each user
+    mapping(address => uint256) private loanBalances;
+    // Mapping to store the collateral balance of each user
+    mapping(address => uint256) private collateralBalances;
 
-    //top3
-    address[3] public Top3Address;
+    // Loan-to-value ratio and liquidation threshold
+    uint256 private constant LOAN_TO_VALUE_RATIO = 70; // 70%
+    uint256 private constant LIQUIDATION_THRESHOLD = 75; // 75%
+    
+    // Loan interest rate (assumed to be 10%)
+    uint256 private constant LOAN_INTEREST_RATE = 10;
 
-    //totalBalances
-    uint256 public TotalBalances = 0;
+    // Reentrancy attack protection
+    bool private locked;
 
-    constructor() {}
+    // Admin address
+    address private admin;
 
-    //error balance too low tips
-    error BalanceTooLow(address account);
+    // Deposit event
+    event Deposited(address indexed account, uint256 amount);
+    // Withdrawal event
+    event Withdrawn(address indexed account, uint256 amount);
+    // Balance check event
+    event BalanceChecked(address indexed account, uint256 balance);
+    // User registration event
+    event UserRegistered(address indexed account);
+    // Loan issued event
+    event LoanIssued(address indexed account, uint256 amount);
+    // Loan repayment event
+    event LoanRepaid(address indexed account, uint256 amount);
+    // Collateral event
+    event CollateralDeposited(address indexed account, uint256 amount);
+    // Liquidation event
+    event Liquidation(address indexed account, uint256 amount);
+    // Admin withdrawal event
+    event AdminWithdraw(address indexed admin, uint256 amount);
 
-    //error deposit eth too few tips
-    error EthTooLow(uint256 eth);
+    // Prevent reentrancy modifier
+    modifier noReentrancy() {
+        require(!locked, "Reentrancy detected!");
+        locked = true; // Lock function
+        _; // Execute function
+        locked = false; // Unlock after execution
+    }
 
-    //deposit eth must be greater than 0,and sender balance >0.001 ETH
-    modifier balanceLimit() {
-        if (msg.sender.balance <= 0.001 ether) revert BalanceTooLow(msg.sender);
-        if (msg.value <= 0) revert EthTooLow(msg.value);
+    // Modifier that allows only admin to execute
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can execute");
         _;
     }
 
-    function deposit() public payable balanceLimit {
-        uint256 data = UserBalances[msg.sender] + msg.value;
-        UserBalances[msg.sender] = data;
-        TotalBalances = TotalBalances + msg.value;
-        sort(msg.sender, data);
+    constructor() {
+        // Set the contract creator as the admin
+        admin = msg.sender;
     }
 
-    //sort the top 3
-    function sort(address s, uint256 data) internal {
-        uint256 min = data;
-        uint8 index = 3;
-        for (uint8 i = 0; i < 3; i++) {
-            //exixt
-            if (Top3Address[i] == s) {
-                index = 3;
-                break;
-            }
-            if (UserBalances[Top3Address[i]] < min) {
-                min = UserBalances[Top3Address[i]];
-                index = i;
-            }
-        }
-        if (index < 3) {
-            Top3Address[index] = s;
-        }
+    // User registration function
+    function register() public {
+        require(!registeredUsers[msg.sender], "User already registered");
+
+        // Register user
+        registeredUsers[msg.sender] = true;
+
+        // Emit registration event
+        emit UserRegistered(msg.sender);
     }
 
-    //top3 address
-    function getTop3() public view returns (address[3] memory) {
-        return Top3Address;
-    }
-    receive() external payable { 
-        deposit();
-    }
-    
-}
+    // Deposit function
+    function deposit() public payable noReentrancy {
+        require(msg.value > 0, "You must deposit some ether");
 
-contract Ownable {
-    address private _owner;
-
-    error invalidAddress(address _owner);
-    error transferFailed(address _address);
-    //dev The caller account is not authorized to perform an operation
-    error ownableUnauthorizedAccount(address account);
-    error OwnableInvalidOwner(address owner);
-    event OwnershipTransferred(
-        address indexed previousOwner,
-        address indexed newOwner
-    );
-
-    constructor(address initialOwner) {
-        if (initialOwner == address(0)) {
-            revert invalidAddress(address(0));
-        }
-        _owner = msg.sender;
-    }
-
-    modifier onlyOwner() {
-        _checkOwner();
-        _;
-    }
-
-    function owner() public view virtual returns (address) {
-        return _owner;
-    }
-
-    function _checkOwner() internal view virtual {
-        if (owner() != msg.sender) {
-            revert ownableUnauthorizedAccount(msg.sender);
-        }
-    }
-    //Transfers ownership of the contract to a new account (`newOwner`),Can only be called by the current owner.
-    function transferOwnership(address newOwner) public virtual onlyOwner {
-        if (newOwner == address(0)) revert OwnableInvalidOwner(address(0));
-        _transferOwnership(newOwner);
-    }
-
-    function _transferOwnership(address newOwner) internal virtual {
-        address oldOwner = _owner;
-        _owner = newOwner;
-        //emit important even
-        emit OwnershipTransferred(oldOwner, newOwner);
-    }
-    
-}
-
-contract BigBank is Bank, Ownable {
-    constructor(address initialOwner) Ownable(initialOwner) {}
-
-    function withdraw(address payable recipient, uint256 amount)
-        public
-        onlyOwner
-    {
+        // Update user balance
+        balances[msg.sender] += msg.value;
         
-        //require(msg.sender==owner,"only owner can withdraw eth");
-        //payable(msg.sender).transfer(TotalBalances);
-        if (recipient == address(0)) revert invalidAddress(address(0));
-        if (amount <= 0 || amount > TotalBalances) revert EthTooLow(amount);
+        // Emit deposit event
+        emit Deposited(msg.sender, msg.value);
+    }
 
-        (bool success, ) = recipient.call{value: amount}("");
-        if (!success) revert transferFailed(recipient);
-        TotalBalances = TotalBalances - amount;
+    // Withdrawal function
+    function withdraw(uint256 amount) public noReentrancy {
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        
+        // Update balance
+        balances[msg.sender] -= amount;
+        
+        // Transfer the amount
+        payable(msg.sender).transfer(amount);
+        
+        // Emit withdrawal event
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    // Balance check function
+    function getBalance() public noReentrancy returns (uint256) {
+        uint256 balance = balances[msg.sender];
+        
+        // Emit balance check event
+        emit BalanceChecked(msg.sender, balance);
+        
+        return balance;
+    }
+
+    // Collateral deposit function
+    function depositCollateral() public payable noReentrancy {
+        require(msg.value > 0, "You must deposit some ether as collateral");
+
+        // Update collateral balance
+        collateralBalances[msg.sender] += msg.value;
+
+        // Emit collateral event
+        emit CollateralDeposited(msg.sender, msg.value);
+    }
+
+    // Loan application function
+    function applyForLoan(uint256 amount) public noReentrancy {
+        require(registeredUsers[msg.sender], "User not registered");
+        require(amount > 0, "Loan amount must be greater than zero");
+        
+        // Calculate maximum loan amount
+        uint256 collateralValue = collateralBalances[msg.sender];
+        uint256 maxLoanAmount = (collateralValue * LOAN_TO_VALUE_RATIO) / 100;
+
+        require(amount <= maxLoanAmount, "Loan exceeds collateral value limit");
+
+        // Grant loan
+        loanBalances[msg.sender] += amount;
+
+        // Transfer loan amount
+        payable(msg.sender).transfer(amount);
+        
+        // Emit loan issued event
+        emit LoanIssued(msg.sender, amount);
+    }
+
+    // Repayment function
+    function repayLoan(uint256 amount) public payable noReentrancy {
+        require(registeredUsers[msg.sender], "User not registered");
+        require(loanBalances[msg.sender] > 0, "No outstanding loan");
+        require(msg.value >= amount, "Insufficient repayment amount");
+
+        // Calculate interest
+        uint256 totalRepayment = (loanBalances[msg.sender] * (100 + LOAN_INTEREST_RATE)) / 100;
+
+        require(amount >= totalRepayment, "Repayment must cover the full loan and interest");
+
+        // Update loan balance
+        loanBalances[msg.sender] = 0;
+
+        // Emit loan repayment event
+        emit LoanRepaid(msg.sender, amount);
+    }
+
+    // Check and trigger liquidation
+    function checkForLiquidation() public noReentrancy {
+        require(registeredUsers[msg.sender], "User not registered");
+        require(loanBalances[msg.sender] > 0, "No outstanding loan");
+
+        // Calculate collateral value and liquidation threshold
+        uint256 collateralValue = collateralBalances[msg.sender];
+        uint256 totalLoanAmount = loanBalances[msg.sender];
+        uint256 liquidationThreshold = (collateralValue * LIQUIDATION_THRESHOLD) / 100;
+
+        // If loan amount exceeds 75% of collateral, trigger liquidation
+        if (totalLoanAmount > liquidationThreshold) {
+            // Emit liquidation event
+            emit Liquidation(msg.sender, totalLoanAmount);
+            // Clear user's loan and collateral
+            loanBalances[msg.sender] = 0;
+            collateralBalances[msg.sender] = 0;
+        }
+    }
+
+    // Query loan balance
+    function getLoanBalance() public view returns (uint256) {
+        return loanBalances[msg.sender];
+    }
+
+    // Query collateral balance
+    function getCollateralBalance() public view returns (uint256) {
+        return collateralBalances[msg.sender];
+    }
+
+    // Admin withdrawal function
+    function adminWithdraw(uint256 amount) public onlyAdmin noReentrancy {
+        require(address(this).balance >= amount, "Contract balance insufficient");
+
+        // Transfer amount to admin
+        payable(admin).transfer(amount);
+        
+        // Emit admin withdrawal event
+        emit AdminWithdraw(admin, amount);
     }
 }

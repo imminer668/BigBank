@@ -21,8 +21,12 @@ contract Bank {
     // Reentrancy attack protection
     bool private locked;
 
-    // Admin address
-    address private admin;
+    // Multi-signature admin addresses
+    address[] private admins;
+    // Mapping to track which addresses are admins
+    mapping(address => bool) private isAdmin;
+    // Threshold for signatures required for admin actions
+    uint256 private constant SIGNATURE_THRESHOLD = 2; // Minimum 2 signatures required
 
     // Deposit event
     event Deposited(address indexed account, uint256 amount);
@@ -42,7 +46,11 @@ contract Bank {
     event Liquidation(address indexed account, uint256 amount);
     // Admin withdrawal event
     event AdminWithdraw(address indexed admin, uint256 amount);
-
+    // Admin addition event
+    event AdminAdded(address indexed newAdmin);
+    // Admin removal event
+    event AdminRemoved(address indexed removedAdmin);
+    
     // Prevent reentrancy modifier
     modifier noReentrancy() {
         require(!locked, "Reentrancy detected!");
@@ -51,15 +59,21 @@ contract Bank {
         locked = false; // Unlock after execution
     }
 
-    // Modifier that allows only admin to execute
+    // Modifier that allows only admins to execute
     modifier onlyAdmin() {
-        require(msg.sender == admin, "Only admin can execute");
+        require(isAdmin[msg.sender], "Only admin can execute");
         _;
     }
 
-    constructor() {
-        // Set the contract creator as the admin
-        admin = msg.sender;
+    constructor(address[] memory _admins) {
+        // Set initial admins
+        for (uint256 i = 0; i < _admins.length; i++) {
+            require(_admins[i] != address(0), "Admin address cannot be zero");
+            require(!isAdmin[_admins[i]], "Duplicate admin address");
+
+            admins.push(_admins[i]);
+            isAdmin[_admins[i]] = true;
+        }
     }
 
     // User registration function
@@ -193,9 +207,48 @@ contract Bank {
         require(address(this).balance >= amount, "Contract balance insufficient");
 
         // Transfer amount to admin
-        payable(admin).transfer(amount);
+        payable(msg.sender).transfer(amount);
         
         // Emit admin withdrawal event
-        emit AdminWithdraw(admin, amount);
+        emit AdminWithdraw(msg.sender, amount);
+    }
+
+    // Add admin function
+    function addAdmin(address newAdmin) public onlyAdmin {
+        require(newAdmin != address(0), "Admin address cannot be zero");
+        require(!isAdmin[newAdmin], "Address is already an admin");
+
+        admins.push(newAdmin);
+        isAdmin[newAdmin] = true;
+
+        // Emit admin addition event
+        emit AdminAdded(newAdmin);
+    }
+
+    // Remove admin function
+    function removeAdmin(address adminToRemove) public onlyAdmin {
+        require(isAdmin[adminToRemove], "Address is not an admin");
+
+        // Remove admin from the list
+        for (uint256 i = 0; i < admins.length; i++) {
+            if (admins[i] == adminToRemove) {
+                admins[i] = admins[admins.length - 1]; // Swap with last admin
+                admins.pop(); // Remove last admin
+                break;
+            }
+        }
+        isAdmin[adminToRemove] = false;
+
+        // Emit admin removal event
+        emit AdminRemoved(adminToRemove);
+    }
+
+    // Execute admin function with multiple signatures
+    function executeAdminAction(bytes memory data, uint256 requiredSignatures) public onlyAdmin {
+        require(requiredSignatures >= SIGNATURE_THRESHOLD, "Not enough signatures");
+
+        // Call the desired function using delegatecall
+        (bool success, ) = address(this).delegatecall(data);
+        require(success, "Execution failed");
     }
 }
